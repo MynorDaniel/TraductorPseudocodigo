@@ -4,36 +4,30 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextField
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import com.example.traductorpseudocodigo.javafiles.Configuracion
-import com.example.traductorpseudocodigo.javafiles.Instruccion
-import com.example.traductorpseudocodigo.javafiles.Lexer
-import com.example.traductorpseudocodigo.javafiles.Parser
-import com.example.traductorpseudocodigo.javafiles.Programa
+import com.example.traductorpseudocodigo.diagrama.*
+import com.example.traductorpseudocodigo.javafiles.*
+import com.example.traductorpseudocodigo.reportes.Reportes
+import com.example.traductorpseudocodigo.reportes.construirReportes
 import com.example.traductorpseudocodigo.ui.theme.TraductorPseudocodigoTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -56,10 +50,14 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun ParserScreen(modifier: Modifier = Modifier) {
+
     val scope = rememberCoroutineScope()
+
     var sourceText by rememberSaveable { mutableStateOf("") }
-    var outputText by rememberSaveable { mutableStateOf("Presiona 'Analizar' para ejecutar el parser.") }
+    var outputText by rememberSaveable { mutableStateOf("") }
     var isRunning by remember { mutableStateOf(false) }
+    var diagrama by remember { mutableStateOf<DiagramaDeFlujo?>(null) }
+    var reportes by remember { mutableStateOf<Reportes?>(null) }
 
     Column(
         modifier = modifier
@@ -67,7 +65,9 @@ fun ParserScreen(modifier: Modifier = Modifier) {
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(text = "Analizador sintáctico de pseudocódigo")
+
+        Text("Analizador sintáctico de pseudocódigo")
+
         TextField(
             value = sourceText,
             onValueChange = { sourceText = it },
@@ -75,78 +75,217 @@ fun ParserScreen(modifier: Modifier = Modifier) {
             minLines = 6,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default)
         )
-        Spacer(modifier = Modifier.height(4.dp))
+
         Button(
             onClick = {
-                if (sourceText.isBlank()) {
-                    outputText = "Pega una entrada antes de analizar."
-                    return@Button
-                }
+                if (sourceText.isBlank()) return@Button
+
                 isRunning = true
                 scope.launch(Dispatchers.Default) {
+
                     val result = runAnalysis(sourceText)
+
                     withContext(Dispatchers.Main) {
-                        outputText = result
+                        outputText = result.output
+                        diagrama = result.diagrama
+                        reportes = result.reportes
                         isRunning = false
                     }
                 }
             },
             enabled = !isRunning
         ) {
-            Text(text = if (isRunning) "Analizando..." else "Analizar")
+            Text(if (isRunning) "Analizando..." else "Analizar")
         }
-        Text(text = "Salida:")
-        Text(text = outputText, modifier = Modifier.fillMaxWidth())
+
+        Text("Salida:")
+        Text(outputText)
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        diagrama?.let {
+            DibujarDiagrama(it)
+        }
+
+        reportes?.let {
+            ReportesView(it)
+        }
     }
 }
 
-private fun runAnalysis(source: String): String {
+private data class AnalysisResult(
+    val output: String,
+    val diagrama: DiagramaDeFlujo?,
+    val reportes: Reportes?
+)
+
+private fun runAnalysis(source: String): AnalysisResult {
+
     return try {
+
         val lexer = Lexer(StringReader(source))
         val parser = Parser(lexer)
         val symbol = parser.parse()
 
-        val builder = StringBuilder()
-        val erroresLexer = lexer.errores
-        for (error in erroresLexer) {
-            builder.appendLine(error)
-        }
-
         val syntaxErrors = parser.syntaxErrors
-        if (syntaxErrors.isEmpty()) {
-            val programa = symbol.value as? Programa
-            if (programa == null) {
-                builder.appendLine("Análisis sintáctico finalizado correctamente, pero sin programa.")
-            } else {
-                val instrucciones: List<Instruccion> = programa.instrucciones
-                val configuraciones: List<Configuracion> = programa.configuraciones
 
-                builder.appendLine("Análisis sintáctico finalizado correctamente.")
-                for (instruccion in instrucciones) {
-                    builder.appendLine(instruccion.toString())
-                }
-                for (configuracion in configuraciones) {
-                    builder.appendLine(configuracion.toString())
-                }
+        if (syntaxErrors.isEmpty()) {
+
+            val programa = symbol.value as? Programa
+
+            if (programa != null) {
+
+                val dBuilder = DiagramaBuilder()
+                val diagrama = dBuilder.build(programa)
+                val reportes = construirReportes(programa.instrucciones)
+
+                AnalysisResult("Análisis sintáctico correcto.", diagrama, reportes)
+
+            } else {
+                AnalysisResult("Programa nulo.", null, null)
             }
+
         } else {
-            builder.appendLine("Errores sintácticos encontrados:")
-            for (error in syntaxErrors) {
-                builder.appendLine(error)
+
+            val errores = buildString {
+                appendLine("Errores lexicos:")
+                lexer.errores.forEach { appendLine(it) }
+                appendLine("Errores sintácticos:")
+                syntaxErrors.forEach { appendLine(it) }
+
             }
+
+            AnalysisResult(errores, null, null)
         }
 
-        if (builder.isEmpty()) "Sin salida del analizador." else builder.toString().trimEnd()
     } catch (ex: Exception) {
-        "Fallo al ejecutar el analizador: ${ex.message}"
+        AnalysisResult("Error: ${ex.message}", null, null)
     }
 }
 
-
-@Preview(showBackground = true)
 @Composable
-fun GreetingPreview() {
-    TraductorPseudocodigoTheme {
-        ParserScreen()
+fun DibujarDiagrama(diagrama: DiagramaDeFlujo) {
+
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(1500.dp)
+            .background(Color.White)
+    ) {
+
+        diagrama.conexiones.forEach { conexion ->
+            dibujarConexion(conexion)
+        }
+
+        diagrama.nodos.forEach { nodo ->
+            dibujarNodo(nodo)
+        }
+    }
+}
+
+private fun DrawScope.dibujarNodo(nodo: Nodo) {
+
+    var color = nodo.color.toComposeColor()
+    val rectTopLeft = Offset(nodo.x, nodo.y)
+    val size = Size(nodo.ancho, nodo.alto)
+
+    when (nodo.figura) {
+
+        Figura.RECTANGULO -> {
+            drawRect(color, rectTopLeft, size)
+        }
+
+        Figura.CIRCULO -> {
+            drawOval(color, rectTopLeft, size)
+        }
+
+        Figura.ROMBO -> {
+            val path = Path().apply {
+                moveTo(nodo.x + nodo.ancho / 2, nodo.y)
+                lineTo(nodo.x + nodo.ancho, nodo.y + nodo.alto / 2)
+                lineTo(nodo.x + nodo.ancho / 2, nodo.y + nodo.alto)
+                lineTo(nodo.x, nodo.y + nodo.alto / 2)
+                close()
+            }
+            drawPath(path, color)
+        }
+
+        else -> {}
+    }
+
+    drawIntoCanvas { canvas ->
+
+        val nativeCanvas = canvas.nativeCanvas
+
+        val paint = androidx.compose.ui.graphics.Paint().apply {
+            color = nodo.colorTexto.toComposeColor()
+        }
+        val frameworkPaint = paint.asFrameworkPaint().apply {
+            textAlign = android.graphics.Paint.Align.CENTER
+            textSize = nodo.tamLetra
+            isAntiAlias = true
+        }
+
+        nativeCanvas.drawText(
+            nodo.texto,
+            nodo.x + nodo.ancho / 2,
+            nodo.y + nodo.alto / 2,
+            frameworkPaint
+        )
+    }
+}
+
+private fun DrawScope.dibujarConexion(conexion: Conexion) {
+
+    val origen = conexion.origen
+    val destino = conexion.destino
+
+    val start = Offset(
+        origen.x + origen.ancho / 2,
+        origen.y + origen.alto
+    )
+
+    val end = Offset(
+        destino.x + destino.ancho / 2,
+        destino.y
+    )
+
+    drawLine(
+        color = Color.Black,
+        start = start,
+        end = end,
+        strokeWidth = 4f
+    )
+
+    val arrowSize = 12f
+
+    drawLine(Color.Black, end, Offset(end.x - arrowSize, end.y - arrowSize), 4f)
+    drawLine(Color.Black, end, Offset(end.x + arrowSize, end.y - arrowSize), 4f)
+}
+
+@Composable
+private fun ReportesView(reportes: Reportes) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Reporte de ocurrencias de operadores matemáticos")
+        Text("Operador | Línea | Columna | Ocurrencia")
+        reportes.operadores.forEach { op ->
+            Text("${op.operador} | ${op.linea} | ${op.columna} | ${op.ocurrencia}")
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Text("Reporte de estructuras de control")
+        Text("Objeto | Línea | Condición")
+        reportes.estructuras.forEach { est ->
+            Text("${est.objeto} | ${est.linea} | ${est.condicion}")
+        }
+    }
+}
+
+fun String.toComposeColor(): Color {
+    return when {
+        this == "DEFAULT" -> Color.LightGray
+        this.startsWith("H") -> Color(android.graphics.Color.parseColor("#${this.drop(1)}"))
+        else -> Color.Gray
     }
 }
